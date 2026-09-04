@@ -54,14 +54,30 @@ const CUSTO_PERDIDO = 0;      /* Perder item NAO tira ponto, e isso e escolha.
                                  nao ajuda a vender nada. O placar premia quem
                                  pega, e ponto. */
 
-const QUEDA_INICIAL = 380;    // px por segundo
-const QUEDA_FINAL   = 820;    // no ultimo segundo da partida
-const INTERVALO_INI = 0.62;   // segundos entre um item e o proximo
-const INTERVALO_FIM = 0.26;
+/* MAIS RAPIDO, pedido dele em 04/09. Estava 380->820 e 0,62->0,26; agora a
+   queda mais que dobra ao longo dos 40s e as pecas vem em quase o dobro do
+   ritmo: de 92 pecas por partida para ~130.
+
+   MAS O PILOTO DE SCRIPT CONTINUA COM ZERO PERDIDOS, antes e depois. Nao adianta
+   apertar mais esperando o numero mudar: o piloto teleporta o alvo da van todo
+   quadro e a folga lateral e de 310px, entao ele nunca erra por reflexo. O que
+   o script mede aqui e VAZAO, nao dificuldade -- a dificuldade e o tempo de
+   reacao e o percurso da mao, que so aparece com gente jogando. */
+const QUEDA_INICIAL = 500;    // px por segundo
+const QUEDA_FINAL   = 1180;   // no ultimo segundo da partida
+const INTERVALO_INI = 0.46;   // segundos entre um item e o proximo
+const INTERVALO_FIM = 0.17;
 
 /* A tag e rara de proposito: se caisse como qualquer outro item, a regra que
-   ela carrega viraria rotina e pararia de surpreender. */
-const CHANCE_DA_TAG = 0.12;
+   ela carrega viraria rotina e pararia de surpreender.
+
+   4% e nao 12%: a chance e por PECA, entao acelerar o jogo multiplicou as tags
+   junto. A 12% com o ritmo novo davam 13 por partida, uma a cada 3 segundos --
+   com tremor de tela e acorde a cada 3 segundos o estouro vira papel de parede,
+   que e exatamente o que esta regra existe para evitar. O alvo e uma mao cheia
+   por partida: o bastante para a pessoa aprender a regra, longe do bastante
+   para ela cansar. */
+const CHANCE_DA_TAG = 0.04;
 
 /* ------------------------------------------------------ o estouro da tag
    A regra da tag era so um texto: ela recolhia tudo e escrevia o aviso, e as
@@ -72,7 +88,7 @@ const CHANCE_DA_TAG = 0.12;
 
    O tremor so acontece na tag. Peca comum entra calada de proposito: se tudo
    sacode, o estouro da tag deixa de ser um acontecimento. */
-const VOO_S      = 0.42;   // quanto a peca leva da posicao dela ate a van
+const VOO_S      = 0.32;   // quanto a peca leva da posicao dela ate a van
 const TREMOR_S   = 0.45;
 const TREMOR_FOR = 15;     // amplitude no espaco do palco, 1080x1920
 const ONDA_S     = 0.55;
@@ -306,6 +322,64 @@ function desenharVan() {
 }
 
 // =====================================================================
+// Som
+// =====================================================================
+/* SINTETIZADO NA HORA, sem arquivo nenhum -- o mesmo caminho do outro jogo da
+   ativacao, onde a moeda tambem nao tem .mp3. Um totem que depende de arquivo
+   de audio e um totem que fica mudo quando alguem mexe na pasta.
+
+   O contexto so nasce no primeiro TOQUE: navegador nenhum deixa tocar som antes
+   de um gesto, e se ele nascesse no carregamento ficaria suspenso para sempre.
+   Tudo dentro de try: sem audio, o jogo segue igual. */
+let audio = null;
+function ligarAudio() {
+  try {
+    if (!audio) audio = new (window.AudioContext || window.webkitAudioContext)();
+    if (audio.state === 'suspended') audio.resume();
+  } catch (e) { audio = null; }
+  return audio;
+}
+
+function nota(hz, atraso, dur, volume, tipo, hzFim) {
+  const a = audio; if (!a) return;
+  const t0 = a.currentTime + atraso;
+  const osc = a.createOscillator(), vol = a.createGain();
+  osc.type = tipo || 'triangle';
+  osc.frequency.setValueAtTime(hz, t0);
+  if (hzFim) osc.frequency.exponentialRampToValueAtTime(hzFim, t0 + dur);
+  vol.gain.setValueAtTime(0.0001, t0);
+  vol.gain.exponentialRampToValueAtTime(volume, t0 + 0.012);
+  vol.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  osc.connect(vol); vol.connect(a.destination);
+  osc.start(t0); osc.stop(t0 + dur + 0.02);
+}
+
+/* UMA nota so, e baixa. Sao mais de duas pegadas por segundo no fim da partida;
+   com duas notas por peca, como a moeda do outro jogo, isso vira zumbido. O
+   pequeno desafino aleatorio evita o efeito de metronomo. */
+function somDePegar() {
+  if (!ligarAudio()) return;
+  try { nota(880 * (0.97 + Math.random() * 0.06), 0, 0.10, 0.15); } catch (e) {}
+}
+
+/* A TAG GANHA UM ACORDE, e nao uma nota: e a unica coisa do jogo que merece uma
+   frase inteira. Triade maior subindo, mais um baque grave que casa com o
+   tremor da tela -- o ouvido e a vista contam a mesma coisa no mesmo instante. */
+function somDaTag() {
+  if (!ligarAudio()) return;
+  try {
+    [523.25, 659.25, 783.99, 1046.50].forEach((hz, i) => nota(hz, i * 0.045, 0.45, 0.20));
+    nota(90, 0, 0.35, 0.30, 'sine', 40);
+  } catch (e) {}
+}
+
+// cada peca sugada caindo dentro da cacamba: tiquinho curto, bem baixo
+function somDeEntrar() {
+  if (!audio) return;
+  try { nota(1400 + Math.random() * 500, 0, 0.06, 0.07, 'sine'); } catch (e) {}
+}
+
+// =====================================================================
 // Partida
 // =====================================================================
 function pegar(it) {
@@ -332,10 +406,12 @@ function pegar(it) {
        da pessoa que disparou aquilo, e ela precisa ver a ligacao. */
     ondas.push({ x: it.x, y: it.y + it.altura / 2, t: 0 });
     tremor = 1;
+    somDaTag();
     avisar(recolhidos > 0 ? 'A TAG RESOLVEU TUDO' : 'TAG',
            '+' + (PONTOS_TAG + recolhidos * PONTOS_ITEM), '#FFC531');
   } else {
     avisar('', '+' + PONTOS_ITEM, '#FFFFFF');
+    somDePegar();
   }
   it.pego = true;
 }
@@ -379,7 +455,12 @@ function passo(dt, t) {
   caindo = caindo.filter(it => !it.pego && !it.perdido);
 
   // as pecas sugadas, a onda e o tremor correm no proprio tempo
-  for (const f of voando) f.t += dt;
+  for (const f of voando) {
+    const antes = f.t;
+    f.t += dt;
+    const fim = f.atraso + VOO_S;
+    if (antes < fim && f.t >= fim) somDeEntrar();   // chegou na cacamba
+  }
   voando = voando.filter(f => f.t < f.atraso + VOO_S);
   for (const o of ondas) o.t += dt;
   ondas = ondas.filter(o => o.t < ONDA_S);
@@ -510,6 +591,7 @@ function terminar() {
 }
 
 function tocouParaAvancar() {
+  ligarAudio();          // aqui, e so aqui: e o gesto que o navegador exige
   if (estado !== 'jogando') comecar();
 }
 
