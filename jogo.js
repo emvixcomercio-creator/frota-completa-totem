@@ -94,6 +94,49 @@ const TREMOR_FOR = 15;     // amplitude no espaco do palco, 1080x1920
 const ONDA_S     = 0.55;
 const ONDA_RAIO  = 900;
 
+/* ------------------------------------------------------ a van enchendo
+   Pedido dele em 04/09: "o carro enchendo na medida que vai pegando as coisas".
+   O que entra na cacamba EMPILHA na boca, com as pecas de verdade que a pessoa
+   pegou -- nao um medidor, nao uma barra. A pilha sobe acima da linha do teto,
+   que e o desenho de caminhonete carregada demais, e diz "frota mais completa"
+   sem escrever isso em lugar nenhum.
+
+   Aos 14 a carga fecha: um pulso dourado lava a van, a pilha esvazia e comeca
+   outra. Sao ~9 fechamentos numa partida de 128 pecas, um a cada 4,5s -- ritmo
+   parecido com o da tag, sem competir com ela.
+
+   ISTO NAO MEXE EM PONTO NENHUM, de proposito: a calibragem do jogo foi medida
+   e continua valendo. */
+const CARGA_MAX  = 14;
+const CARGA_TILE = 78;     // largura de cada peca empilhada
+const DESCARGA_S = 0.5;
+
+/* As vagas da pilha, calculadas uma vez. Tres fileiras subindo, estreitando em
+   cima, com desencontro fixo em cada vaga: pilha, e nao grade. */
+const VAGAS = (() => {
+  const v = []; let k = 0;
+  /* DENTRO do buraco, e nao empoleirado em cima dele. Duas tentativas antes
+     desta: na altura do aro a pilha sumia atras do teto da Fiorino (a foto ja e
+     opaca 29px acima da linha do aro); subida para -46 ela aparecia inteira,
+     mas boiando sobre o teto como bagagem amarrada.
+
+     O que resolve nao e a altura, e o RECORTE: a pilha e desenhada depois do
+     corpo da van, cortada pela boca, e o arco da frente do aro e repassado por
+     cima dela. Ai a fileira de baixo some atras da borda como carga que afundou
+     na caixa, e so o que passa da boca e que fica de fora. */
+  for (const f of [{ n: 5, dy: -14, larg: 148 },
+                   { n: 5, dy: -52, larg: 126 },
+                   { n: 4, dy: -88, larg: 94 }]) {
+    for (let i = 0; i < f.n; i++) {
+      k++;
+      const u = f.n === 1 ? 0 : (i / (f.n - 1)) * 2 - 1;
+      v.push({ dx: u * f.larg, dy: f.dy + Math.sin(k * 2.3) * 5,
+               giro: Math.sin(k * 1.7) * 0.26 });
+    }
+  }
+  return v;
+})();
+
 // ------------------------------------------------------------- a Fiorino
 /* 560 e nao 300. Na arte da cliente a van ocupa 575 de 941, ou seja 61% da
    largura; a 300 ela virava um brinquedo no rodape e a tela ficava vazia.
@@ -127,6 +170,8 @@ let ultimoQuadro = 0;
 let voando = [];          // pecas sugadas pela tag, a caminho da van
 let ondas = [];           // a onda dourada que abre no ponto da tag
 let tremor = 0;           // 1 no estouro, cai ate 0
+let carga = [];           // o que esta empilhado na cacamba agora
+let descarga = 0;         // 1 quando a carga fecha, cai ate 0
 let escalaDoPalco = 1;    // guardada: o tremor entra no mesmo transform do palco
 const el = {};
 
@@ -294,12 +339,58 @@ function medidasDaVan() {
   const largura = VAN_LARGURA;
   const altura = im ? largura * im.height / im.width : 210;
   const y = ALTURA - altura - VAN_RODAPE;
-  return { largura, altura, y, boca: y + altura * 0.13 };
+  /* rx e ry da boca saem daqui tambem: o recorte da carga, o aro e a onda da
+     descarga tem que usar a MESMA elipse, senao a carga vaza pela borda. */
+  return { largura, altura, y, boca: y + altura * 0.13,
+           rx: largura * 0.36, ry: 34 };
+}
+
+/* A pilha vai ANTES do aro e do corpo da van: o aro passa na frente da fileira
+   de baixo e da a profundidade de "esta dentro da caixa". */
+function desenharCarga(boca) {
+  for (let i = 0; i < carga.length && i < VAGAS.length; i++) {
+    const v = VAGAS[i], im = imagens[carga[i].chave];
+    const l = CARGA_TILE, a = im ? l * im.height / im.width : l;
+    ctx.save();
+    ctx.translate(vanX + v.dx, boca + v.dy);
+    ctx.rotate(v.giro);
+    if (im) ctx.drawImage(im, -l / 2, -a / 2, l, a);
+    else { ctx.fillStyle = carga[i].cor; ctx.fillRect(-l / 2, -a / 2, l, a); }
+    ctx.restore();
+  }
+}
+
+// o pulso que lava a van quando a carga fecha
+function desenharDescarga(boca) {
+  if (descarga <= 0) return;
+  const u = 1 - descarga;
+  ctx.save();
+  ctx.globalAlpha = descarga * 0.8;
+  ctx.strokeStyle = '#FFC531';
+  ctx.lineWidth = 16 * descarga + 2;
+  ctx.beginPath();
+  ctx.ellipse(vanX, boca, 200 + 220 * u, 34 + 120 * u, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/* So o arco da FRENTE do aro, repassado por cima da carga: e ele que faz a
+   fileira de baixo parecer afundada dentro da caixa em vez de apoiada nela. */
+function bordaDaFrente(boca, rx, ry) {
+  ctx.save();
+  ctx.strokeStyle = '#FF2D6F';
+  ctx.lineWidth = 9;
+  ctx.shadowColor = 'rgba(255,45,111,.95)';
+  ctx.shadowBlur = 34;
+  ctx.beginPath();
+  ctx.ellipse(vanX, boca, rx, ry, 0, 0, Math.PI);
+  ctx.stroke();
+  ctx.restore();
 }
 
 function desenharVan() {
   const im = imagens.fiorino;
-  const { largura, altura, y, boca } = medidasDaVan();
+  const { largura, altura, y, boca, rx, ry } = medidasDaVan();
 
   /* A BOCA DA CACAMBA ACESA, que na arte dela e o que diz "e aqui que cai
      dentro". Sem isso a pessoa nao entende onde tem que aparar. */
@@ -309,7 +400,7 @@ function desenharVan() {
   ctx.shadowColor = 'rgba(255,45,111,.95)';
   ctx.shadowBlur = 34;
   ctx.beginPath();
-  ctx.ellipse(vanX, boca, largura * 0.36, 26, 0, 0, Math.PI * 2);
+  ctx.ellipse(vanX, boca, rx, ry, 0, 0, Math.PI * 2);
   ctx.stroke();
   ctx.restore();
 
@@ -318,6 +409,36 @@ function desenharVan() {
   } else {
     ctx.fillStyle = '#F2F2F2';
     ctx.fillRect(vanX - largura / 2, y, largura, altura);
+  }
+
+  /* A carga vem DEPOIS do corpo da van e recortada pela boca: a elipse, mais
+     tudo que esta acima dela dentro da largura dela. O que passa da boca fica
+     visivel, o que esta abaixo some -- que e o desenho de coisa dentro de
+     caixa. Depois o arco da frente passa por cima e fecha a ilusao. */
+  ctx.save();
+  ctx.beginPath();
+  ctx.ellipse(vanX, boca, rx, ry, 0, 0, Math.PI * 2);
+  ctx.rect(vanX - rx, boca - 260, rx * 2, 260);
+  ctx.clip();
+  desenharCarga(boca);
+  ctx.restore();
+
+  bordaDaFrente(boca, rx, ry);
+  desenharDescarga(boca);
+}
+
+// =====================================================================
+// A carga da van
+// =====================================================================
+/* Uma peca entrou na cacamba. Quando enche, a carga FECHA e a pilha zera: e o
+   que faz a coisa continuar sendo leitura de progresso a partida inteira, em
+   vez de encher uma vez nos primeiros cinco segundos e ficar parada. */
+function carregarNaVan(def) {
+  carga.push(def);
+  if (carga.length >= CARGA_MAX) {
+    carga = [];
+    descarga = 1;
+    somDeCarga();
   }
 }
 
@@ -379,6 +500,13 @@ function somDeEntrar() {
   try { nota(1400 + Math.random() * 500, 0, 0.06, 0.07, 'sine'); } catch (e) {}
 }
 
+/* A carga fechando. Duas notas subindo, mais graves e mais baixas que o acorde
+   da tag: e um progresso, nao um acontecimento -- nao pode roubar a cena dela. */
+function somDeCarga() {
+  if (!audio) return;
+  try { nota(392, 0, 0.16, 0.13); nota(523.25, 0.07, 0.22, 0.13); } catch (e) {}
+}
+
 // =====================================================================
 // Partida
 // =====================================================================
@@ -407,11 +535,13 @@ function pegar(it) {
     ondas.push({ x: it.x, y: it.y + it.altura / 2, t: 0 });
     tremor = 1;
     somDaTag();
+    carregarNaVan(it.def);      // a propria tag entra na cacamba
     avisar(recolhidos > 0 ? 'A TAG RESOLVEU TUDO' : 'TAG',
            '+' + (PONTOS_TAG + recolhidos * PONTOS_ITEM), '#FFC531');
   } else {
     avisar('', '+' + PONTOS_ITEM, '#FFFFFF');
     somDePegar();
+    carregarNaVan(it.def);
   }
   it.pego = true;
 }
@@ -459,12 +589,16 @@ function passo(dt, t) {
     const antes = f.t;
     f.t += dt;
     const fim = f.atraso + VOO_S;
-    if (antes < fim && f.t >= fim) somDeEntrar();   // chegou na cacamba
+    if (antes < fim && f.t >= fim) {                // chegou na cacamba
+      somDeEntrar();
+      carregarNaVan(f.def);
+    }
   }
   voando = voando.filter(f => f.t < f.atraso + VOO_S);
   for (const o of ondas) o.t += dt;
   ondas = ondas.filter(o => o.t < ONDA_S);
   if (tremor > 0) tremor = Math.max(0, tremor - dt / TREMOR_S);
+  if (descarga > 0) descarga = Math.max(0, descarga - dt / DESCARGA_S);
 }
 
 /* ------------------------------------------------------------ o estouro */
@@ -569,7 +703,8 @@ function comecar() {
   estado = 'jogando';
   tempo = TEMPO_TOTAL; pontos = 0;
   caindo = []; pegos = 0; perdidos = 0; tagsPegas = 0;
-  voando = []; ondas = []; tremor = 0; aplicarPalco(0, 0);
+  voando = []; ondas = []; tremor = 0; carga = []; descarga = 0;
+  aplicarPalco(0, 0);
   proximoEm = 0.4;
   vanX = vanAlvo = LARGURA / 2;
   document.getElementById('telaInicio').classList.add('escondida');
@@ -679,7 +814,8 @@ window.frota = {
   estado: () => ({ estado, tempo, pontos, pegos, perdidos, tagsPegas,
                    caindo: caindo.length, vanX: Math.round(vanX),
                    voando: voando.length, ondas: ondas.length,
-                   tremor: +tremor.toFixed(2) }),
+                   tremor: +tremor.toFixed(2), carga: carga.length,
+                   descarga: +descarga.toFixed(2) }),
   moverPara(x) { vanAlvo = x; },
   comecar,
   itens: () => caindo.map(i => ({ chave: i.def.chave, x: Math.round(i.x),
