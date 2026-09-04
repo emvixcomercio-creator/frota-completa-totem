@@ -63,6 +63,21 @@ const INTERVALO_FIM = 0.26;
    ela carrega viraria rotina e pararia de surpreender. */
 const CHANCE_DA_TAG = 0.12;
 
+/* ------------------------------------------------------ o estouro da tag
+   A regra da tag era so um texto: ela recolhia tudo e escrevia o aviso, e as
+   pecas sumiam sem mais. Num totem a pessoa joga UMA vez; se ela nao vir o que
+   aconteceu na primeira tag, nao descobre a regra nunca. Entao o recolhimento
+   virou coisa de ver: as pecas SAO SUGADAS para a Fiorino, uma onda dourada
+   abre no ponto da tag e a tela treme.
+
+   O tremor so acontece na tag. Peca comum entra calada de proposito: se tudo
+   sacode, o estouro da tag deixa de ser um acontecimento. */
+const VOO_S      = 0.42;   // quanto a peca leva da posicao dela ate a van
+const TREMOR_S   = 0.45;
+const TREMOR_FOR = 15;     // amplitude no espaco do palco, 1080x1920
+const ONDA_S     = 0.55;
+const ONDA_RAIO  = 900;
+
 // ------------------------------------------------------------- a Fiorino
 /* 560 e nao 300. Na arte da cliente a van ocupa 575 de 941, ou seja 61% da
    largura; a 300 ela virava um brinquedo no rodape e a tela ficava vazia.
@@ -93,6 +108,10 @@ let pegos = 0, perdidos = 0, tagsPegas = 0;
 let proximoEm = 0;
 let vanX = LARGURA / 2, vanAlvo = LARGURA / 2;
 let ultimoQuadro = 0;
+let voando = [];          // pecas sugadas pela tag, a caminho da van
+let ondas = [];           // a onda dourada que abre no ponto da tag
+let tremor = 0;           // 1 no estouro, cai ate 0
+let escalaDoPalco = 1;    // guardada: o tremor entra no mesmo transform do palco
 const el = {};
 
 // =====================================================================
@@ -301,11 +320,18 @@ function pegar(it) {
     let recolhidos = 0;
     for (const outro of caindo) {
       if (outro === it || outro.pego) continue;
-      outro.pego = true;
+      outro.pego = true;               // sai da fisica na hora
+      voando.push({ def: outro.def, x0: outro.x, y0: outro.y, largura: outro.largura,
+                    altura: outro.altura, giro: outro.giro,
+                    atraso: 0.03 * recolhidos, t: 0 });
       pontos += PONTOS_ITEM;
       pegos++;
       recolhidos++;
     }
+    /* A onda sai do ponto onde a tag foi pega, e nao do meio da tela: e o gesto
+       da pessoa que disparou aquilo, e ela precisa ver a ligacao. */
+    ondas.push({ x: it.x, y: it.y + it.altura / 2, t: 0 });
+    tremor = 1;
     avisar(recolhidos > 0 ? 'A TAG RESOLVEU TUDO' : 'TAG',
            '+' + (PONTOS_TAG + recolhidos * PONTOS_ITEM), '#FFC531');
   } else {
@@ -351,11 +377,76 @@ function passo(dt, t) {
     }
   }
   caindo = caindo.filter(it => !it.pego && !it.perdido);
+
+  // as pecas sugadas, a onda e o tremor correm no proprio tempo
+  for (const f of voando) f.t += dt;
+  voando = voando.filter(f => f.t < f.atraso + VOO_S);
+  for (const o of ondas) o.t += dt;
+  ondas = ondas.filter(o => o.t < ONDA_S);
+  if (tremor > 0) tremor = Math.max(0, tremor - dt / TREMOR_S);
+}
+
+/* ------------------------------------------------------------ o estouro */
+function desenharOndas() {
+  for (const o of ondas) {
+    const u = o.t / ONDA_S;
+    const raio = ONDA_RAIO * (1 - Math.pow(1 - u, 2.4));
+    ctx.save();
+    ctx.globalAlpha = (1 - u) * 0.75;
+    ctx.strokeStyle = '#FFC531';
+    ctx.lineWidth = 26 * (1 - u) + 3;
+    ctx.beginPath();
+    ctx.arc(o.x, o.y, raio, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = (1 - u) * 0.28;
+    ctx.lineWidth = 8;
+    ctx.beginPath();
+    ctx.arc(o.x, o.y, raio * 0.66, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function desenharVoando(van) {
+  for (const f of voando) {
+    if (f.t < f.atraso) { continue; }
+    const u = Math.min(1, (f.t - f.atraso) / VOO_S);
+    const e = u * u;                       // acelera: a peca e puxada, nao jogada
+    const alvoX = vanX, alvoY = van.boca;
+    const x = f.x0 + (alvoX - f.x0) * e;
+    const y = (f.y0 + f.altura / 2) + (alvoY - (f.y0 + f.altura / 2)) * e;
+    const enc = 1 - 0.72 * e;              // encolhe ao entrar na cacamba
+
+    ctx.save();
+    ctx.globalAlpha = 1 - 0.85 * Math.pow(u, 3);
+    ctx.translate(x, y);
+    ctx.rotate(f.giro + e * 5);
+    ctx.scale(enc, enc);
+    const im = imagens[f.def.chave];
+    if (im) ctx.drawImage(im, -f.largura / 2, -f.altura / 2, f.largura, f.altura);
+    else { ctx.fillStyle = f.def.cor;
+           ctx.fillRect(-f.largura / 2, -f.altura / 2, f.largura, f.altura); }
+    ctx.restore();
+  }
 }
 
 function desenhar(t) {
+  /* O TREMOR ENTRA NO TRANSFORM DO PALCO, junto do scale, e nao dentro do
+     canvas: assim o HUD sacode com a cena e a tela inteira parece levar o
+     impacto. Por isso `escalaDoPalco` fica guardada -- sao a mesma propriedade
+     CSS, e escrever so o translate apagaria o scale. */
+  if (tremor > 0) {
+    const f = tremor * tremor * TREMOR_FOR;
+    aplicarPalco((Math.random()*2-1) * f, (Math.random()*2-1) * f);
+  } else if (el.palcoTremendo) {
+    aplicarPalco(0, 0);            // devolve ao lugar uma vez, nao todo quadro
+  }
+
   desenharFundo(t);
   for (const it of caindo) desenharItem(it, t);
+  const van = medidasDaVan();
+  desenharOndas();
+  desenharVoando(van);
   desenharVan();
 }
 
@@ -397,6 +488,7 @@ function comecar() {
   estado = 'jogando';
   tempo = TEMPO_TOTAL; pontos = 0;
   caindo = []; pegos = 0; perdidos = 0; tagsPegas = 0;
+  voando = []; ondas = []; tremor = 0; aplicarPalco(0, 0);
   proximoEm = 0.4;
   vanX = vanAlvo = LARGURA / 2;
   document.getElementById('telaInicio').classList.add('escondida');
@@ -463,10 +555,15 @@ function ligarComando() {
 // =====================================================================
 // Palco: encaixar 1080x1920 na janela
 // =====================================================================
-function encaixarPalco() {
+function aplicarPalco(dx, dy) {
   const palco = document.getElementById('palco');
-  const escala = Math.min(window.innerWidth / LARGURA, window.innerHeight / ALTURA);
-  palco.style.transform = `scale(${escala})`;
+  palco.style.transform = `translate(${dx}px, ${dy}px) scale(${escalaDoPalco})`;
+  el.palcoTremendo = (dx !== 0 || dy !== 0);
+}
+
+function encaixarPalco() {
+  escalaDoPalco = Math.min(window.innerWidth / LARGURA, window.innerHeight / ALTURA);
+  aplicarPalco(0, 0);
 }
 
 async function comecarTudo() {
@@ -498,7 +595,9 @@ async function comecarTudo() {
    joga uma partida inteira sem depender de dedo humano. */
 window.frota = {
   estado: () => ({ estado, tempo, pontos, pegos, perdidos, tagsPegas,
-                   caindo: caindo.length, vanX: Math.round(vanX) }),
+                   caindo: caindo.length, vanX: Math.round(vanX),
+                   voando: voando.length, ondas: ondas.length,
+                   tremor: +tremor.toFixed(2) }),
   moverPara(x) { vanAlvo = x; },
   comecar,
   itens: () => caindo.map(i => ({ chave: i.def.chave, x: Math.round(i.x),
